@@ -1,21 +1,17 @@
 package com.endlessforge.javadecompilerapi.service.cfr;
 
-import org.benf.cfr.reader.api.*;
-import org.benf.cfr.reader.util.getout.SinkReturns;
+import org.benf.cfr.reader.api.CfrDriver;
+import org.benf.cfr.reader.api.OutputSinkFactory;
+import org.benf.cfr.reader.api.SinkReturns;
 import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * CFR adapter using the embedded CFR library.
- */
 @Component
 public class CfrAdapter {
 
     public String decompileClass(byte[] classBytes, String providedClassName) throws IOException {
-        // Write bytes to temp file (CFR expects a file path)
         File tmp = File.createTempFile("cfr-class-", ".class");
         try (FileOutputStream fos = new FileOutputStream(tmp)) {
             fos.write(classBytes);
@@ -34,14 +30,17 @@ public class CfrAdapter {
             @Override
             public <T> Sink<T> getSink(SinkType sinkType, SinkClass sinkClass) {
                 if (sinkType == SinkType.JAVA && sinkClass == SinkClass.DECOMPILED) {
-                    return (Sink<T>) ((SinkReturns.Decompiled d) -> {
-                        sb.append("/* Package: ").append(d.getPackageName()).append(" Class: ").append(d.getClassName()).append(" */\n");
-                        sb.append(d.getJava()).append("\n");
-                    });
+                    // Fix: Explicitly return the Sink and cast the input object manually
+                    return x -> {
+                        if (x instanceof SinkReturns.Decompiled) {
+                            SinkReturns.Decompiled d = (SinkReturns.Decompiled) x;
+                            sb.append("/* Package: ").append(d.getPackageName())
+                                    .append(" Class: ").append(d.getClassName()).append(" */\n");
+                            sb.append(d.getJava()).append("\n");
+                        }
+                    };
                 }
-                return t -> {
-                    // ignore
-                };
+                return t -> {};
             }
         };
 
@@ -52,26 +51,15 @@ public class CfrAdapter {
     }
 
     public void decompileJar(File jarFile, File outDir, String targetClass) {
-        Map<String, String> options = new HashMap<>();
-        // you can set specific options if you want
-        OutputSinkFactory sinkFactory = OutputSinkFactory.createSinkFactory(new SinkFactoryToDir(outDir));
-        CfrDriver driver = new CfrDriver.Builder().withOutputSink(sinkFactory).withOptions(options).build();
+        // Fix: Removed the non-existent createSinkFactory call
+        OutputSinkFactory sinkFactory = new SinkFactoryToDir(outDir);
+        CfrDriver driver = new CfrDriver.Builder().withOutputSink(sinkFactory).build();
 
         List<String> toAnalyse = new ArrayList<>();
-        if (targetClass != null && !targetClass.isBlank()) {
-            // CFR can take class names or jar paths; passing jar path will decompile all
-            // We'll pass the jar file path; the sink will output files to outDir
-            toAnalyse.add(jarFile.getAbsolutePath() + (targetClass.startsWith("/") ? "" : ""));
-        } else {
-            toAnalyse.add(jarFile.getAbsolutePath());
-        }
+        toAnalyse.add(jarFile.getAbsolutePath());
         driver.analyse(toAnalyse);
     }
 
-    /**
-     * Helper sink factory that writes decompiled files into outDir
-     * (a minimal convenience wrapper; not a complete implementation)
-     */
     static class SinkFactoryToDir implements OutputSinkFactory {
         private final File outDir;
         SinkFactoryToDir(File outDir) { this.outDir = outDir; }
@@ -83,23 +71,22 @@ public class CfrAdapter {
 
         @Override public <T> Sink<T> getSink(SinkType sinkType, SinkClass sinkClass) {
             if (sinkType == SinkType.JAVA && sinkClass == SinkClass.DECOMPILED) {
-                return (Sink<T>) (d -> {
-                    try {
-                        SinkReturns.Decompiled dd = (SinkReturns.Decompiled) d;
-                        String pkg = dd.getPackageName();
-                        String cls = dd.getClassName();
-                        String java = dd.getJava();
-                        File pkgDir = new File(outDir, pkg.replace('.', File.separatorChar));
-                        pkgDir.mkdirs();
-                        File out = new File(pkgDir, cls + ".java");
-                        try (FileOutputStream fos = new FileOutputStream(out);
-                             OutputStreamWriter w = new OutputStreamWriter(fos)) {
-                            w.write(java);
-                        }
-                    } catch (IOException ex) {
-                        // ignore
+                return x -> {
+                    if (x instanceof SinkReturns.Decompiled) {
+                        try {
+                            SinkReturns.Decompiled dd = (SinkReturns.Decompiled) x;
+                            String pkg = dd.getPackageName();
+                            String cls = dd.getClassName();
+                            String java = dd.getJava();
+                            File pkgDir = new File(outDir, pkg.replace('.', File.separatorChar));
+                            pkgDir.mkdirs();
+                            File out = new File(pkgDir, cls + ".java");
+                            try (OutputStreamWriter w = new OutputStreamWriter(new FileOutputStream(out))) {
+                                w.write(java);
+                            }
+                        } catch (IOException ignored) {}
                     }
-                });
+                };
             }
             return t -> {};
         }
