@@ -68,85 +68,63 @@ public class DecompilerService {
      * If targetClass present, returns zip with a single file or the single source content file (but for simplicity we zip).
      */
     public File decompileJar(MultipartFile file, String mode, String targetClass) throws IOException {
-        Path tmp = Files.createTempDirectory("decompile-jar-");
-        Path jarPath = tmp.resolve(file.getOriginalFilename() != null ? file.getOriginalFilename() : "uploaded.jar");
+        Path tmpDir = Files.createTempDirectory("decompile-jar-");
+        Path jarPath = tmpDir.resolve(file.getOriginalFilename() != null ? file.getOriginalFilename() : "uploaded.jar");
 
         try (InputStream in = file.getInputStream()) {
             Files.copy(in, jarPath, StandardCopyOption.REPLACE_EXISTING);
         }
 
-
         String normalizedMode = mode.toLowerCase(Locale.ROOT);
-        Path outDir = Files.createTempDirectory("decompile-out-");
+        File zipFile = tmpDir.resolve("decompiled-" + normalizedMode + ".zip").toFile();
 
-        switch (normalizedMode) {
-            case "cfr":
-                cfr.decompileJar(jarPath.toFile(), outDir.toFile(), targetClass);
-                break;
-            case "procyon":
-                procyon.decompileJar(jarPath.toFile(), outDir.toFile(), targetClass);
-                break;
-            case "jadx":
-                jadx.decompileJar(jarPath.toFile(), outDir.toFile(), targetClass);
-                break;
-            default:
-                externalAdapter.decompileJarWithExternalTool(jarPath.toFile(), outDir.toFile(), normalizedMode, targetClass);
-                break;
+        // OPTIMIZATION: Stream directly to Zip, bypassing intermediate files
+        try (FileOutputStream fos = new FileOutputStream(zipFile);
+             ZipOutputStream zos = new ZipOutputStream(new BufferedOutputStream(fos))) {
+
+            // Set compression level to STORE (0) or FAST (1) to save CPU?
+            // Actually, default is fine, but if CPU is the bottleneck, reducing compression helps.
+            zos.setLevel(1);
+
+            switch (normalizedMode) {
+                case "cfr":
+                    cfr.decompileJarToZip(jarPath.toFile(), zos, targetClass);
+                    break;
+                case "procyon":
+                    procyon.decompileJarToZip(jarPath.toFile(), zos, targetClass);
+                    break;
+                case "jadx":
+                    jadx.decompileJarToZip(jarPath.toFile(), zos, targetClass);
+                    break;
+                default:
+                    // External adapters still need disk I/O because they are CLI tools
+                    // This will remain slow, but that's unavoidable for "external" mode.
+                    File outDir = Files.createTempDirectory("ext-out-").toFile();
+                    externalAdapter.decompileJarWithExternalTool(jarPath.toFile(), outDir, normalizedMode, targetClass);
+                    zipDirectory(outDir, zos); // Helper to zip the folder if external was used
+                    break;
+            }
         }
 
-        // zip outDir -> archive
-        File zipFile = tmp.resolve(file.getOriginalFilename() + "-" + normalizedMode + "-decompiled.zip").toFile();
-        zipDirectory(outDir.toFile(), zipFile);
-        // cleanup outDir (not deleting tmp yet)
         return zipFile;
     }
 
-    private void zipDirectory(File sourceDir, File outFile) throws IOException {
-        try (ZipOutputStream zs = new ZipOutputStream(new FileOutputStream(outFile))) {
-            Path pp = sourceDir.toPath();
-            Files.walk(pp).filter(p -> !Files.isDirectory(p)).forEach(path -> {
-                ZipEntry zipEntry = new ZipEntry(pp.relativize(path).toString());
-                try {
-                    zs.putNextEntry(zipEntry);
-                    Files.copy(path, zs);
-                    zs.closeEntry();
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                }
-            });
-        }
+    // Helper strictly for the External adapter fallback
+    private void zipDirectory(File sourceDir, ZipOutputStream zs) throws IOException {
+        Path pp = sourceDir.toPath();
+        if (!Files.exists(pp)) return;
+        Files.walk(pp).filter(p -> !Files.isDirectory(p)).forEach(path -> {
+            ZipEntry zipEntry = new ZipEntry(pp.relativize(path).toString());
+            try {
+                zs.putNextEntry(zipEntry);
+                Files.copy(path, zs);
+                zs.closeEntry();
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        });
     }
 
-    private File runJarTool(String toolJarName, File inputFile) throws Exception {
-        File outputDir = Files.createTempDirectory("ext-decompile").toFile();
 
-        List<String> command = new ArrayList<>();
-        command.add("java");
-        command.add("-jar");
-        command.add("tools/" + toolJarName);
-
-        if (toolJarName.contains("fernflower")) {
-            command.add(inputFile.getAbsolutePath());
-            command.add(outputDir.getAbsolutePath());
-        } else if (toolJarName.contains("jd-cli")) {
-            command.add(inputFile.getAbsolutePath());
-            command.add("-od");
-            command.add(outputDir.getAbsolutePath());
-        } else {
-            throw new IllegalArgumentException("Unsupported external tool: " + toolJarName);
-        }
-
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(true);
-
-        Process process = pb.start();
-        int exitCode = process.waitFor();
-
-        if (exitCode != 0) {
-            throw new RuntimeException("External tool failed with exit code: " + exitCode);
-        }
-
-        return outputDir;
-    }
 
 }

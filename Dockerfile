@@ -18,11 +18,12 @@ WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 
 # IMPORTANT: Copy the tools directory into the container
-# This allows ExternalToolAdapter to find "tools/fernflower.jar"
 COPY tools ./tools
 
 # Expose port 8080
 EXPOSE 8080
 
-# Run the application
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# --- CHANGE IS HERE ---
+# Added: -Xmx384m (Limit heap to 384MB, leaving RAM for OS overhead)
+# Added: -XX:+UseSerialGC (Single-threaded GC, essential for 0.1 CPU)
+ENTRYPOINT ["java", "-Xmx384m", "-XX:+UseSerialGC", "-jar", "app.jar"]

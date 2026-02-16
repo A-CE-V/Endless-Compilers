@@ -5,6 +5,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -74,6 +76,38 @@ public class ExternalToolAdapter {
         try {
             p.waitFor();
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    private File runJarTool(String toolJarName, File inputFile) throws Exception {
+        File outputDir = Files.createTempDirectory("ext-decompile").toFile();
+
+        List<String> command = new ArrayList<>();
+        command.add("java");
+        command.add("-jar");
+        command.add("tools/" + toolJarName);
+
+        if (toolJarName.contains("fernflower")) {
+            command.add(inputFile.getAbsolutePath());
+            command.add(outputDir.getAbsolutePath());
+        } else if (toolJarName.contains("jd-cli")) {
+            command.add(inputFile.getAbsolutePath());
+            command.add("-od");
+            command.add(outputDir.getAbsolutePath());
+        } else {
+            throw new IllegalArgumentException("Unsupported external tool: " + toolJarName);
+        }
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.redirectErrorStream(true);
+
+        Process process = pb.start();
+        int exitCode = process.waitFor();
+
+        if (exitCode != 0) {
+            throw new RuntimeException("External tool failed with exit code: " + exitCode);
+        }
+
+        return outputDir;
     }
 
     private File findToolJarForMode(String mode) {

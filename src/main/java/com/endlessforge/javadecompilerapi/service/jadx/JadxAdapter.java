@@ -7,7 +7,10 @@ import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 @Component
 public class JadxAdapter {
@@ -34,6 +37,39 @@ public class JadxAdapter {
         } catch (Exception e) {
             tmp.delete();
             throw new IOException("jadx failure: " + e.getMessage(), e);
+        }
+    }
+
+    public void decompileJarToZip(File jarFile, ZipOutputStream zos, String targetClass) {
+        JadxArgs args = new JadxArgs();
+        args.getInputFiles().add(jarFile);
+        args.setSkipResources(true);
+        // Reduce thread count to 1 for 0.1 CPU environments to prevent context switching overload
+        args.setThreadsCount(1);
+
+        try (JadxDecompiler jadx = new JadxDecompiler(args)) {
+            jadx.load();
+
+            for (JavaClass cls : jadx.getClasses()) {
+                if (targetClass != null && !targetClass.isBlank()) {
+                    if (!cls.getFullName().equals(targetClass)) continue;
+                }
+
+                String code = cls.getCode(); // Decompile happens here
+                String path = cls.getFullName().replace('.', '/') + ".java";
+
+                synchronized (zos) {
+                    try {
+                        zos.putNextEntry(new ZipEntry(path));
+                        zos.write(code.getBytes(StandardCharsets.UTF_8));
+                        zos.closeEntry();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 

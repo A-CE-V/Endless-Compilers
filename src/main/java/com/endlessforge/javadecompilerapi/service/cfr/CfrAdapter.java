@@ -6,7 +6,10 @@ import org.benf.cfr.reader.api.SinkReturns;
 import org.springframework.stereotype.Component;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 @Component
 public class CfrAdapter {
@@ -50,41 +53,52 @@ public class CfrAdapter {
         return sb.toString();
     }
 
-    public void decompileJar(File jarFile, File outDir, String targetClass) {
-        // Fix: Removed the non-existent createSinkFactory call
-        OutputSinkFactory sinkFactory = new SinkFactoryToDir(outDir);
-        CfrDriver driver = new CfrDriver.Builder().withOutputSink(sinkFactory).build();
+    public void decompileJarToZip(File jarFile, ZipOutputStream zos, String targetClass) {
+        OutputSinkFactory sinkFactory = new SinkFactoryToZip(zos);
 
-        List<String> toAnalyse = new ArrayList<>();
-        toAnalyse.add(jarFile.getAbsolutePath());
+        // Options to reduce memory/cpu usage
+        Map<String, String> options = new HashMap<>();
+        options.put("clobber", "true"); // Don't check for file existence
+
+        CfrDriver driver = new CfrDriver.Builder()
+                .withOutputSink(sinkFactory)
+                .withOptions(options)
+                .build();
+
+        List<String> toAnalyse = Collections.singletonList(jarFile.getAbsolutePath());
         driver.analyse(toAnalyse);
     }
 
-    static class SinkFactoryToDir implements OutputSinkFactory {
-        private final File outDir;
-        SinkFactoryToDir(File outDir) { this.outDir = outDir; }
+
+
+    static class SinkFactoryToZip implements OutputSinkFactory {
+        private final ZipOutputStream zos;
+
+        SinkFactoryToZip(ZipOutputStream zos) { this.zos = zos; }
 
         @Override public List<SinkClass> getSupportedSinks(SinkType sinkType, Collection<SinkClass> available) {
-            if (sinkType == SinkType.JAVA) return Arrays.asList(SinkClass.DECOMPILED, SinkClass.STRING);
-            return Collections.singletonList(SinkClass.STRING);
+            // We only care about the decompiled source
+            if (sinkType == SinkType.JAVA) return Collections.singletonList(SinkClass.DECOMPILED);
+            return Collections.emptyList();
         }
 
         @Override public <T> Sink<T> getSink(SinkType sinkType, SinkClass sinkClass) {
             if (sinkType == SinkType.JAVA && sinkClass == SinkClass.DECOMPILED) {
                 return x -> {
                     if (x instanceof SinkReturns.Decompiled) {
-                        try {
-                            SinkReturns.Decompiled dd = (SinkReturns.Decompiled) x;
-                            String pkg = dd.getPackageName();
-                            String cls = dd.getClassName();
-                            String java = dd.getJava();
-                            File pkgDir = new File(outDir, pkg.replace('.', File.separatorChar));
-                            pkgDir.mkdirs();
-                            File out = new File(pkgDir, cls + ".java");
-                            try (OutputStreamWriter w = new OutputStreamWriter(new FileOutputStream(out))) {
-                                w.write(java);
+                        SinkReturns.Decompiled dd = (SinkReturns.Decompiled) x;
+                        String path = dd.getPackageName().replace('.', '/') + "/" + dd.getClassName() + ".java";
+
+                        // ZOS is not thread-safe, and CFR might be multi-threaded
+                        synchronized (zos) {
+                            try {
+                                zos.putNextEntry(new ZipEntry(path));
+                                zos.write(dd.getJava().getBytes(StandardCharsets.UTF_8));
+                                zos.closeEntry();
+                            } catch (IOException e) {
+                                e.printStackTrace();
                             }
-                        } catch (IOException ignored) {}
+                        }
                     }
                 };
             }
